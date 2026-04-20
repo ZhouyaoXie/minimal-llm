@@ -91,7 +91,7 @@ class MultiHeadAttention(torch.nn.Module):
 
         attn_score = []
         for i in range(self.n_head):
-            attn_score.append(self.ttention(Q_reshaped[i], K_reshaped[i], V_reshaped[i]))
+            attn_score.append(self.attention(Q_reshaped[i], K_reshaped[i], V_reshaped[i]))
         attn_score = torch.cat(attn_score, dim = -1)
 
         projected_score = self.W_o(attn_score)
