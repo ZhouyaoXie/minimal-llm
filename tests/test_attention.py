@@ -94,3 +94,46 @@ class TestAttention(unittest.TestCase):
 
         # Future positions are allowed to change; this guards against a vacuous test.
         self.assertFalse(torch.allclose(changed[:, split_idx + 1 :, :], baseline[:, split_idx + 1 :, :]))
+
+    def test_key_padding_mask_ignores_padded_keys(self) -> None:
+        # True = padded key (blocked). Scramble K/V only at padded slots; output must be unchanged.
+        Q = torch.tensor(
+            [
+                [[1.0, 0.5], [0.0, 2.0], [1.0, 1.0], [0.3, 0.3]],
+                [[-1.0, 1.0], [0.5, 0.5], [2.0, 0.0], [0.0, 0.0]],
+            ]
+        )
+        K = torch.tensor(
+            [
+                [[0.0, 1.0], [1.0, 0.0], [9.0, 9.0], [8.0, 8.0]],
+                [[1.0, 1.0], [0.0, 1.0], [1.0, 1.0], [7.0, 7.0]],
+            ]
+        )
+        V = torch.tensor(
+            [
+                [[1.0, 0.0], [0.0, 1.0], [5.0, 5.0], [3.0, 3.0]],
+                [[2.0, 2.0], [0.0, 0.0], [1.0, 2.0], [4.0, 4.0]],
+            ]
+        )
+        key_padding_mask = torch.tensor(
+            [
+                [False, False, True, True],
+                [False, False, False, True],
+            ],
+            dtype=torch.bool,
+        )
+
+        attention = Attention()
+        baseline = attention(Q, K, V, masking=False, key_padding_mask=key_padding_mask)
+
+        k_garbage = torch.full_like(K, 999.0)
+        v_garbage = torch.full_like(V, -888.0)
+        K_tampered = torch.where(key_padding_mask[:, :, None], k_garbage, K)
+        V_tampered = torch.where(key_padding_mask[:, :, None], v_garbage, V)
+        changed = attention(Q, K_tampered, V_tampered, masking=False, key_padding_mask=key_padding_mask)
+
+        torch.testing.assert_close(changed, baseline, rtol=0, atol=1e-5)
+
+        # If padding were not applied, garbage keys would change the output.
+        no_mask = attention(Q, K_tampered, V_tampered, masking=False, key_padding_mask=None)
+        self.assertFalse(torch.allclose(no_mask, baseline, rtol=0, atol=1e-3))
