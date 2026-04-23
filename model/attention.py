@@ -4,7 +4,7 @@ class Attention(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, Q, K, V) -> torch.Tensor:
+    def forward(self, Q, K, V, masking = True) -> torch.Tensor:
         """
         Calculate attention score based on Q, K, V matrices 
 
@@ -12,6 +12,7 @@ class Attention(torch.nn.Module):
             Q: torch.Tensor of shape (batch_size, l_q, d_k)
             K: torch.Tensor of shape (batch_size, l_kv, d_k)
             V: torch.Tensor of shape (batch_size, l_kv, d_v)
+            masks: torch.Tensor of shape(batch_size, )
 
         Returns: 
             attn_score: shape (batch_size, l_q, d_v)
@@ -20,8 +21,14 @@ class Attention(torch.nn.Module):
         assert Q.shape[0] == K.shape[0] == V.shape[0], f"expected Q, K, V to have the same batch size, got {Q.shape[0]}, {K.shape[0]}, {V.shape[0]} instead"
         assert K.shape[-2] == V.shape[-2], f"expected K, V to have the same seq_len, got {K.shape[-2]}, {V.shape[-2]} instead"
         assert Q.shape[-1] == K.shape[-1], f"expected Q, K to have the same latent dimension, got {Q.shape[-1]}, {K.shape[-1]} instead"
+        if masking:
+            assert Q.shape[-2] == K.shape[-2], f"expected Q, K to have the same seq_len with masking=True, got {Q.shape[-2]}, {K.shape[-2]} instead"
 
         similarity_score = torch.matmul(Q, K.transpose(-2, -1)) / (K.shape[-1] ** 0.5)
+        if masking: 
+            seq_len = Q.shape[-2]
+            mask = torch.triu(torch.ones(seq_len, seq_len, device = Q.device), diagonal = 1).bool()
+            similarity_score = similarity_score.masked_fill(mask, float('-inf'))
         probs = torch.softmax(similarity_score, dim = -1)
         attn_score = torch.matmul(probs, V)
         return attn_score 
@@ -55,7 +62,7 @@ class MultiHeadAttention(torch.nn.Module):
 
         self.attention = Attention()
 
-    def forward(self, X, encoder_output = None) -> torch.Tensor:
+    def forward(self, X, encoder_output = None, masking = True) -> torch.Tensor:
         """
         Calculates multi-head attention score.
 
@@ -64,6 +71,7 @@ class MultiHeadAttention(torch.nn.Module):
             encoder_output (optional): torch.Tensor of shape (batch_size, l_kv, d_model)
                 if encoder_output is None, Q, K, V are all projected from X (self attention); 
                 otherwise, Q comes from X and K, V come from encoder_output (cross-attention)
+            masking: whether to mask previous inputs. Default to True. 
 
         Returns:
             attn_score: torch.Tensor of shape (batch_size, l_q, d_model)
@@ -71,7 +79,9 @@ class MultiHeadAttention(torch.nn.Module):
         assert X.shape[-1] == self.d_model, f"expected X.shape[-1] == d_model, got {X.shape[-1]}, {self.d_model} instead"
         if encoder_output is not None: 
             assert encoder_output.shape[-1] == self.d_model, f"expected encoder_output.shape[-1] == d_model, got {encoder_output.shape[-1]}, {self.d_model} instead"
-        
+        if masking: 
+            assert encoder_output is None, f"expected self attention when masking is applied, but got not-None encoder output: {encoder_output}"
+
         bs, l_q, _ = X.shape
         if encoder_output is not None:
             l_kv = encoder_output.shape[1]
@@ -91,7 +101,7 @@ class MultiHeadAttention(torch.nn.Module):
 
         attn_score = []
         for i in range(self.n_head):
-            attn_score.append(self.attention(Q_reshaped[i], K_reshaped[i], V_reshaped[i]))
+            attn_score.append(self.attention(Q_reshaped[i], K_reshaped[i], V_reshaped[i], masking))
         attn_score = torch.cat(attn_score, dim = -1)
 
         projected_score = self.W_o(attn_score)
