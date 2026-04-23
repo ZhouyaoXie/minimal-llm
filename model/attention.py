@@ -1,10 +1,14 @@
+from typing import Optional
+
 import torch
 
 class Attention(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, Q, K, V, masking = True) -> torch.Tensor:
+    def forward(
+        self, Q, K, V, masking=True, key_padding_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Calculate attention score based on Q, K, V matrices 
 
@@ -12,7 +16,8 @@ class Attention(torch.nn.Module):
             Q: torch.Tensor of shape (batch_size, l_q, d_k)
             K: torch.Tensor of shape (batch_size, l_kv, d_k)
             V: torch.Tensor of shape (batch_size, l_kv, d_v)
-            masks: torch.Tensor of shape(batch_size, )
+            masking: whether to block positions where the key index is after the query index
+            key_padding_mask: torch.Tensor of boolean of shape (batch_size, l_kv), applies padding to masked key positions if value is True
 
         Returns: 
             attn_score: shape (batch_size, l_q, d_v)
@@ -23,12 +28,22 @@ class Attention(torch.nn.Module):
         assert Q.shape[-1] == K.shape[-1], f"expected Q, K to have the same latent dimension, got {Q.shape[-1]}, {K.shape[-1]} instead"
         if masking:
             assert Q.shape[-2] == K.shape[-2], f"expected Q, K to have the same seq_len with masking=True, got {Q.shape[-2]}, {K.shape[-2]} instead"
+        if key_padding_mask is not None:
+            assert key_padding_mask.ndim == 2, f"expect key_padding_mask to be of shape (batch_size, seq_len), got rank={key_padding_mask.ndim} instead"
+            assert key_padding_mask.shape[0] == Q.shape[0], f"expect key_padding_mask[0] and Q to have the same batch size, got {key_padding_mask.shape[0]}, {Q.shape[0]} instead"
+            assert key_padding_mask.shape[1] == K.shape[-2], f"expect key_padding_mask[1] and K to have the same seq_len, got {key_padding_mask.shape[1]}, {K.shape[-2]} instead"
 
         similarity_score = torch.matmul(Q, K.transpose(-2, -1)) / (K.shape[-1] ** 0.5)
+
         if masking: 
             seq_len = Q.shape[-2]
             mask = torch.triu(torch.ones(seq_len, seq_len, device = Q.device), diagonal = 1).bool()
             similarity_score = similarity_score.masked_fill(mask, float('-inf'))
+
+        if key_padding_mask is not None:
+            key_padding_mask = key_padding_mask.unsqueeze(1)
+            similarity_score = similarity_score.masked_fill(key_padding_mask, float('-inf'))
+
         probs = torch.softmax(similarity_score, dim = -1)
         attn_score = torch.matmul(probs, V)
         return attn_score 
@@ -62,7 +77,13 @@ class MultiHeadAttention(torch.nn.Module):
 
         self.attention = Attention()
 
-    def forward(self, X, encoder_output = None, masking = True) -> torch.Tensor:
+    def forward(
+        self,
+        X,
+        encoder_output=None,
+        masking=True,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Calculates multi-head attention score.
 
@@ -71,7 +92,8 @@ class MultiHeadAttention(torch.nn.Module):
             encoder_output (optional): torch.Tensor of shape (batch_size, l_kv, d_model)
                 if encoder_output is None, Q, K, V are all projected from X (self attention); 
                 otherwise, Q comes from X and K, V come from encoder_output (cross-attention)
-            masking: whether to mask previous inputs. Default to True. 
+            masking: whether to block positions where the key index is after the query index
+            key_padding_mask: torch.Tensor of boolean of shape (batch_size, l_kv), applies padding to masked key positions if value is True
 
         Returns:
             attn_score: torch.Tensor of shape (batch_size, l_q, d_model)
@@ -79,8 +101,6 @@ class MultiHeadAttention(torch.nn.Module):
         assert X.shape[-1] == self.d_model, f"expected X.shape[-1] == d_model, got {X.shape[-1]}, {self.d_model} instead"
         if encoder_output is not None: 
             assert encoder_output.shape[-1] == self.d_model, f"expected encoder_output.shape[-1] == d_model, got {encoder_output.shape[-1]}, {self.d_model} instead"
-        if masking: 
-            assert encoder_output is None, f"expected self attention when masking is applied, but got not-None encoder output: {encoder_output}"
 
         bs, l_q, _ = X.shape
         if encoder_output is not None:
@@ -101,7 +121,7 @@ class MultiHeadAttention(torch.nn.Module):
 
         attn_score = []
         for i in range(self.n_head):
-            attn_score.append(self.attention(Q_reshaped[i], K_reshaped[i], V_reshaped[i], masking))
+            attn_score.append(self.attention(Q_reshaped[i], K_reshaped[i], V_reshaped[i], masking, key_padding_mask))
         attn_score = torch.cat(attn_score, dim = -1)
 
         projected_score = self.W_o(attn_score)
