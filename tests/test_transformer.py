@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from model.transformer import DecoderBlock
+from model.transformer import DecoderBlock, FeedForward
 
 
 class TestDecoderBlock(unittest.TestCase):
@@ -54,6 +54,33 @@ class TestDecoderBlock(unittest.TestCase):
         }
 
         self.assertTrue(expected_params.issubset(params_with_grad))
+
+
+class TestFeedForward(unittest.TestCase):
+    def test_feedforward_preserves_model_dimension_and_is_finite(self) -> None:
+        torch.manual_seed(0)
+        ffn = FeedForward(d_model=8, d_hidden=32, dropout=0.0)
+        X = torch.randn(2, 5, 8)
+
+        out = ffn(X)
+
+        self.assertEqual(out.shape, X.shape)
+        self.assertTrue(torch.isfinite(out).all())
+
+    def test_feedforward_backward_flows_through_linear_layers(self) -> None:
+        torch.manual_seed(0)
+        ffn = FeedForward(d_model=8, d_hidden=32, dropout=0.0)
+        X = torch.randn(2, 5, 8, requires_grad=True)
+
+        out = ffn(X)
+        out.sum().backward()
+
+        self.assertIsNotNone(X.grad)
+        self.assertTrue(torch.isfinite(X.grad).all())
+        self.assertIsNotNone(ffn.linear1.weight.grad)
+        self.assertIsNotNone(ffn.linear2.weight.grad)
+        self.assertTrue(torch.isfinite(ffn.linear1.weight.grad).all())
+        self.assertTrue(torch.isfinite(ffn.linear2.weight.grad).all())
 
 
 if __name__ == "__main__":
