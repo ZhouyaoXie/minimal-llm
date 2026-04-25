@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from model.transformer import DecoderBlock, FeedForward
+from model.transformer import DecoderBlock, FeedForward, GPT
 
 
 class TestDecoderBlock(unittest.TestCase):
@@ -81,6 +81,60 @@ class TestFeedForward(unittest.TestCase):
         self.assertIsNotNone(ffn.linear2.weight.grad)
         self.assertTrue(torch.isfinite(ffn.linear1.weight.grad).all())
         self.assertTrue(torch.isfinite(ffn.linear2.weight.grad).all())
+
+
+class TestGPT(unittest.TestCase):
+    def test_gpt_returns_vocab_logits(self) -> None:
+        torch.manual_seed(0)
+        model = GPT(
+            n_block=2,
+            d_model=8,
+            n_head=2,
+            d_hidden=32,
+            vocab_size=20,
+            max_seq_len=8,
+            attn_dropout=0.0,
+            ffn_dropout=0.0,
+        )
+        input_ids = torch.randint(0, 20, (2, 5))
+
+        logits = model(input_ids)
+
+        self.assertEqual(logits.shape, (2, 5, 20))
+        self.assertTrue(torch.isfinite(logits).all())
+
+    def test_gpt_backward_flows_through_model_components(self) -> None:
+        torch.manual_seed(0)
+        model = GPT(
+            n_block=2,
+            d_model=8,
+            n_head=2,
+            d_hidden=32,
+            vocab_size=20,
+            max_seq_len=8,
+            attn_dropout=0.0,
+            ffn_dropout=0.0,
+        )
+        input_ids = torch.randint(0, 20, (2, 5))
+
+        logits = model(input_ids)
+        logits.sum().backward()
+
+        expected_params = {
+            "token_embedding.weight",
+            "position_embedding.weight",
+            "decoder_layers.0.masked_attn.W_q.weight",
+            "decoder_layers.0.ffn.linear1.weight",
+            "norm.g",
+            "lm_head.weight",
+        }
+        params_with_grad = {
+            name
+            for name, param in model.named_parameters()
+            if param.requires_grad and param.grad is not None
+        }
+
+        self.assertTrue(expected_params.issubset(params_with_grad))
 
 
 if __name__ == "__main__":
