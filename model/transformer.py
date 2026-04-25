@@ -99,3 +99,91 @@ class DecoderBlock(torch.nn.Module):
         ffn_out = self.ffn(X_norm)
         X = X + ffn_out
         return X
+
+
+class GPT(torch.nn.Module):
+    """
+    A GPT-style decoder-only Transformer class.
+
+    Args:
+        n_block: number of decoder blocks
+        d_model: latent model dimension
+        n_head: number of attention heads (must be a factor of d_model)
+        d_hidden: hidden dimension used by FFN
+        vocab_size: vocabulary size
+        max_seq_len: max input sequence length
+        attn_dropout: attention dropout probability; applied after attention output projection
+        ffn_dropout: FFN dropout probability; applied after activation and after second linear layer
+    """
+
+    def __init__(
+        self,
+        n_block,
+        d_model,
+        n_head,
+        d_hidden,
+        vocab_size,
+        max_seq_len=8196,
+        attn_dropout=0.0,
+        ffn_dropout=0.0,
+    ):
+        super().__init__()
+        self.max_seq_len = max_seq_len
+        assert (
+            d_model % n_head == 0
+        ), f"expect d_model to be divisible by n_head, got {d_model}, {n_head} instead"
+        d_head = d_model // n_head
+
+        self.token_embedding = torch.nn.Embedding(vocab_size, d_model)
+        self.position_embedding = torch.nn.Embedding(max_seq_len, d_model)
+
+        self.decoder_layers = torch.nn.ModuleList(
+            DecoderBlock(
+                n_head=n_head,
+                d_head=d_head,
+                d_hidden=d_hidden,
+                attn_dropout=attn_dropout,
+                ffn_dropout=ffn_dropout,
+            )
+            for _ in range(n_block)
+        )
+
+        # additional layer norm after final attention
+        self.norm = LayerNorm(d_model)
+
+        self.lm_head = torch.nn.Linear(d_model, vocab_size)
+
+    def forward(self, input_ids):
+        """
+        Forward pass through a decoder-only Transformer
+        input_ids -> token embeddings + positional embedding -> decoder layers
+
+        Args:
+            input_ids: torch.Tensor of shape (batch_size, seq_len)
+
+        Returns:
+            torch.Tensor of shape (batch_size, seq_len, vocab_size)
+        """
+        assert (
+            input_ids.ndim == 2
+        ), f"expect input_ids to have shape (batch_size, seq_len), got rank={input_ids.ndim} instead"
+        assert (
+            input_ids.shape[-1] <= self.max_seq_len
+        ), f"input length cannot exceed self.max_seq_len, got {input_ids.shape[-1]}, {self.max_seq_len} instead"
+
+        # get embeddings from token_ids
+        bs, seq_len = input_ids.shape
+        token_emb = self.token_embedding(input_ids)
+        pos_inputs = torch.arange(seq_len, device=input_ids.device)
+        pos_emb = self.position_embedding(pos_inputs)
+        X = token_emb + pos_emb
+
+        # decoder blocks forward pass
+        for i, decoder_layer in enumerate(self.decoder_layers):
+            X = decoder_layer(X)
+
+        # layer normalization + projection head
+        out_norm = self.norm(X)
+        logits = self.lm_head(out_norm)
+
+        return logits
